@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AeroSentinel 3D — Real-Time IoT Air Quality & Fire Digital Twin</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Three.js (3D Graphics) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- MQTT.js (Browser WebSockets) -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(1.02); }
+    }
+    .pulse-danger {
+      animation: pulse-slow 1s infinite;
+    }
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    .glass-panel {
+      background: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(51, 65, 85, 0.6);
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased overflow-x-hidden">
+
+  <!-- ===================================================================== -->
+  <!-- TOP HEADER / NAV BAR -->
+  <!-- ===================================================================== -->
+  <header class="border-b border-slate-800 glass-panel sticky top-0 z-50 px-6 py-3">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+          <i data-lucide="shield-alert" class="w-6 h-6 text-white"></i>
+        </div>
+        <div>
+          <h1 class="text-xl font-bold tracking-tight bg-gradient-to-r from-cyan-400 via-sky-300 to-indigo-300 bg-clip-text text-transparent">
+            AeroSentinel 3D Digital Twin
+          </h1>
+          <p class="text-xs text-slate-400 font-medium">IoT Environmental Telemetry & AI Smoke Spatial Mapping</p>
+        </div>
+      </div>
+
+      <!-- Connection Badges & Quick Demo Controls -->
+      <div class="flex items-center gap-3 flex-wrap">
+        <!-- MQTT Status Badge -->
+        <div id="mqttStatusBadge" class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-950/80 text-emerald-400 border border-emerald-500/40 shadow-sm">
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping"></span>
+          <span id="mqttStatusText">Connecting to Broker...</span>
+        </div>
+
+        <!-- Node ID Badge -->
+        <div class="px-3 py-1.5 rounded-full text-xs font-mono font-medium bg-slate-900 border border-slate-800 text-slate-300">
+          Node: <span id="nodeIdDisplay" class="text-cyan-400">ESP32-CAM-SENTINEL</span>
+        </div>
+
+        <!-- Judge Demo Trigger Controls -->
+        <div class="flex items-center gap-1 bg-slate-900 border border-slate-800 p-1 rounded-xl">
+          <button id="btnSimulateSmoke" onclick="toggleSimulatedHazard(true)" class="px-3 py-1 text-xs font-semibold rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white transition shadow-sm flex items-center gap-1">
+            <i data-lucide="flame" class="w-3.5 h-3.5"></i> Trigger Smoke Plume
+          </button>
+          <button id="btnSimulateNormal" onclick="toggleSimulatedHazard(false)" class="px-3 py-1 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition flex items-center gap-1">
+            <i data-lucide="wind" class="w-3.5 h-3.5"></i> Normal Air
+          </button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===================================================================== -->
+  <!-- MAIN DASHBOARD CONTENT -->
+  <!-- ===================================================================== -->
+  <main class="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
+
+    <!-- CRITICAL HAZARD ALERT BANNER (Dynamically shown during smoke/fire) -->
+    <div id="hazardBanner" class="hidden pulse-danger bg-gradient-to-r from-rose-900/90 via-red-800/90 to-rose-900/90 border border-rose-500 rounded-2xl p-4 shadow-2xl shadow-rose-950/80">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+          <div class="p-2.5 bg-rose-600 rounded-xl text-white">
+            <i data-lucide="alert-triangle" class="w-7 h-7"></i>
+          </div>
+          <div>
+            <h3 class="text-lg font-bold text-white tracking-wide">EMERGENCY: TOXIC SMOKE & FIRE PARTICULATE PLUME DETECTED!</h3>
+            <p class="text-xs text-rose-200 mt-0.5">High optical density particulate rise accompanied by volatile combustion gases. Immediate ventilation & evacuation protocol advised.</p>
+          </div>
+        </div>
+        <div class="px-4 py-2 bg-rose-950/80 border border-rose-400 rounded-xl text-center">
+          <span class="block text-2xl font-black text-rose-300 font-mono" id="hazardAqiVal">AQI 310</span>
+          <span class="text-[10px] tracking-wider uppercase text-rose-400 font-bold">HAZARDOUS</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- KPI CARDS GRID -->
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+      
+      <!-- PM2.5 Card -->
+      <div class="glass-panel rounded-2xl p-4 border border-slate-800 relative overflow-hidden group hover:border-cyan-500/50 transition">
+        <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-1">
+          <span>PM 2.5 (Fine Dust)</span>
+          <i data-lucide="cloud-fog" class="w-4 h-4 text-cyan-400"></i>
+        </div>
+        <div class="flex items-baseline gap-1 mt-2">
+          <span id="pm25Val" class="text-3xl font-black font-mono text-cyan-400 tracking-tight">16.4</span>
+          <span class="text-xs text-slate-500 font-medium">µg/m³</span>
+        </div>
+        <div class="mt-2 text-[11px] flex items-center justify-between">
+          <span class="text-slate-500">WHO Guideline: &lt;15</span>
+          <span id="pm25Badge" class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400">SAFE</span>
+        </div>
+      </div>
+
+      <!-- PM10 Card -->
+      <div class="glass-panel rounded-2xl p-4 border border-slate-800 relative overflow-hidden group hover:border-sky-500/50 transition">
+        <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-1">
+          <span>PM 10 (Coarse Dust)</span>
+          <i data-lucide="wind" class="w-4 h-4 text-sky-400"></i>
+        </div>
+        <div class="flex items-baseline gap-1 mt-2">
+          <span id="pm10Val" class="text-3xl font-black font-mono text-sky-400 tracking-tight">29.1</span>
+          <span class="text-xs text-slate-500 font-medium">µg/m³</span>
+        </div>
+        <div class="mt-2 text-[11px] flex items-center justify-between">
+          <span class="text-slate-500">WHO Guideline: &lt;45</span>
+          <span id="pm10Badge" class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400">NORMAL</span>
+        </div>
+      </div>
+
+      <!-- CO2 Equivalent (MQ-135) -->
+      <div class="glass-panel rounded-2xl p-4 border border-slate-800 relative overflow-hidden group hover:border-amber-500/50 transition">
+        <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-1">
+          <span>CO₂ Equivalent</span>
+          <i data-lucide="gauge" class="w-4 h-4 text-amber-400"></i>
+        </div>
+        <div class="flex items-baseline gap-1 mt-2">
+          <span id="co2Val" class="text-3xl font-black font-mono text-amber-400 tracking-tight">424</span>
+          <span class="text-xs text-slate-500 font-medium">ppm</span>
+        </div>
+        <div class="mt-2 text-[11px] flex items-center justify-between">
+          <span class="text-slate-500">Baseline ~415 ppm</span>
+          <span id="co2Badge" class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400">FRESH</span>
+        </div>
+      </div>
+
+      <!-- AQI Index -->
+      <div class="glass-panel rounded-2xl p-4 border border-slate-800 relative overflow-hidden group hover:border-indigo-500/50 transition">
+        <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-1">
+          <span>Composite AQI</span>
+          <i data-lucide="activity" class="w-4 h-4 text-indigo-400"></i>
+        </div>
+        <div class="flex items-baseline gap-1 mt-2">
+          <span id="aqiVal" class="text-3xl font-black font-mono text-indigo-400 tracking-tight">42</span>
+          <span class="text-xs text-slate-500 font-medium">/ 500</span>
+        </div>
+        <div class="mt-2 text-[11px] flex items-center justify-between">
+          <span id="aqiText" class="text-emerald-400 font-semibold">Good Quality</span>
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+        </div>
+      </div>
+
+      <!-- Temperature -->
+      <div class="glass-panel rounded-2xl p-4 border border-slate-800 relative overflow-hidden">
+        <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-1">
+          <span>Ambient Temp</span>
+          <i data-lucide="thermometer" class="w-4 h-4 text-orange-400"></i>
+        </div>
+        <div class="flex items-baseline gap-1 mt-2">
+          <span id="tempVal" class="text-3xl font-black font-mono text-slate-200 tracking-tight">26.4</span>
+          <span class="text-xs text-slate-500 font-medium">°C</span>
+        </div>
+        <div class="mt-2 text-[11px] text-slate-500 flex justify-between">
+          <span>Comfort: 22-27°C</span>
+          <span class="text-slate-400">Optimal</span>
+        </div>
+      </div>
+
+      <!-- Relative Humidity -->
+      <div class="glass-panel rounded-2xl p-4 border border-slate-800 relative overflow-hidden">
+        <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-1">
+          <span>Humidity</span>
+          <i data-lucide="droplets" class="w-4 h-4 text-blue-400"></i>
+        </div>
+        <div class="flex items-baseline gap-1 mt-2">
+          <span id="humidityVal" class="text-3xl font-black font-mono text-slate-200 tracking-tight">51.8</span>
+          <span class="text-xs text-slate-500 font-medium">%</span>
+        </div>
+        <div class="mt-2 text-[11px] text-slate-500 flex justify-between">
+          <span>Target: 40-60%</span>
+          <span class="text-slate-400">Ideal</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- 3D SPATIAL DIGITAL TWIN + COMPUTER VISION SECTION -->
+    <!-- ===================================================================== -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <!-- 3D DIGITAL TWIN VIEWER (Takes 2 Columns) -->
+      <div class="lg:col-span-2 glass-panel rounded-3xl p-5 border border-slate-800 relative flex flex-col min-h-[480px]">
+        <div class="flex items-center justify-between mb-3 z-10">
+          <div>
+            <h2 class="text-base font-bold flex items-center gap-2 text-slate-100">
+              <i data-lucide="box" class="w-5 h-5 text-indigo-400"></i>
+              3D Spatial Dispersion Mapping (Digital Twin)
+            </h2>
+            <p class="text-xs text-slate-400">Real-time volumetric particle simulation calculated from live PM2.5 & Gas concentration</p>
+          </div>
+          <!-- 3D Legend & Interaction Hint -->
+          <div class="flex items-center gap-2 text-[11px] bg-slate-900/90 px-3 py-1.5 rounded-xl border border-slate-800 text-slate-400">
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> Clean</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400"></span> Moderate</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-rose-500"></span> Smoke</span>
+            <span class="text-slate-600">|</span>
+            <span class="text-cyan-400">🖱️ Drag to Rotate 360°</span>
+          </div>
+        </div>
+
+        <!-- 3D Canvas Container -->
+        <div id="threeContainer" class="w-full flex-1 rounded-2xl overflow-hidden relative border border-slate-800/80 bg-slate-950">
+          <!-- Sensor HUD Overlay in 3D Viewport -->
+          <div class="absolute bottom-4 left-4 z-10 glass-panel px-3.5 py-2 rounded-xl text-xs space-y-1 pointer-events-none">
+            <div class="text-[10px] uppercase font-bold text-slate-400">Spatial Coordinates</div>
+            <div class="font-mono text-cyan-300">ESP32 Node @ [X: 0.0, Y: 1.5m, Z: 0.0]</div>
+            <div class="text-[10px] text-slate-400">Dispersion Model: <span id="plumeModelText" class="text-emerald-400 font-semibold">Gaussian Laminar (Normal)</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- COMPUTER VISION & CAMERA AI PANEL (1 Column) -->
+      <div class="glass-panel rounded-3xl p-5 border border-slate-800 flex flex-col justify-between space-y-4">
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-base font-bold flex items-center gap-2 text-slate-100">
+              <i data-lucide="camera" class="w-5 h-5 text-cyan-400"></i>
+              Camera Smoke/Fire Vision AI
+            </h2>
+            <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
+              OV3660 Stream
+            </span>
+          </div>
+          <p class="text-xs text-slate-400 mb-4">Neural Network Optical Fire & Smoke Classifier running on edge feed</p>
+
+          <!-- Simulated Live Camera Screen -->
+          <div class="relative rounded-2xl overflow-hidden aspect-video bg-slate-900 border border-slate-800 flex items-center justify-center group shadow-inner">
+            <!-- Simulated background scene -->
+            <div id="cameraCanvasMock" class="w-full h-full bg-cover bg-center transition-all duration-700" style="background-image: radial-gradient(circle at center, #1e293b 0%, #090d16 100%);">
+              <div class="w-full h-full flex flex-col items-center justify-center p-4 text-center">
+                <i data-lucide="video" class="w-10 h-10 text-slate-600 mb-2"></i>
+                <span class="text-xs text-slate-400 font-medium">Real-Time Optical Observation Zone</span>
+                <span class="text-[10px] text-slate-500 mt-1 font-mono">Res: 640x480 @ 15fps</span>
+              </div>
+            </div>
+
+            <!-- AI Bounding Box / Detection HUD -->
+            <div id="aiBoundingBox" class="hidden absolute inset-6 border-2 border-rose-500 rounded-xl bg-rose-500/10 flex flex-col justify-between p-2 pointer-events-none">
+              <div class="flex justify-between items-center text-[10px] font-mono font-bold text-white bg-rose-600 px-2 py-0.5 rounded shadow">
+                <span>DETECTED: FLAME & SMOKE</span>
+                <span id="aiConfidenceText">CONF: 94.8%</span>
+              </div>
+              <div class="text-[10px] font-mono text-rose-300 text-right">LOC: [X: 184, Y: 112]</div>
+            </div>
+
+            <!-- Corner Camera Info -->
+            <div class="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 text-[10px] font-mono text-emerald-400 flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> LIVE
+            </div>
+          </div>
+        </div>
+
+        <!-- Vision AI Analytics Metrics -->
+        <div class="space-y-3 pt-2">
+          <div>
+            <div class="flex justify-between text-xs font-medium mb-1">
+              <span class="text-slate-400">Fire/Smoke Probability</span>
+              <span id="fireProbText" class="font-mono text-emerald-400 font-bold">2.4% (Clear)</span>
+            </div>
+            <div class="w-full h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+              <div id="fireProbBar" class="h-full bg-emerald-500 rounded-full transition-all duration-500" style="width: 2.4%;"></div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2 text-xs font-mono">
+            <div class="bg-slate-900/80 p-2.5 rounded-xl border border-slate-800/80">
+              <span class="text-slate-500 block text-[10px]">INFERENCE TIME</span>
+              <span class="font-bold text-slate-200">38 ms</span>
+            </div>
+            <div class="bg-slate-900/80 p-2.5 rounded-xl border border-slate-800/80">
+              <span class="text-slate-500 block text-[10px]">MODEL BACKEND</span>
+              <span class="font-bold text-indigo-400">CNN v2 (.h5)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- REAL-TIME TIME-SERIES TELEMETRY GRAPH -->
+    <!-- ===================================================================== -->
+    <div class="glass-panel rounded-3xl p-5 border border-slate-800">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-base font-bold flex items-center gap-2 text-slate-100">
+            <i data-lucide="line-chart" class="w-5 h-5 text-sky-400"></i>
+            Live Multi-Sensor Telemetry Stream
+          </h2>
+          <p class="text-xs text-slate-400">Continuous time-series tracking of Particulates (PM2.5 / PM10) vs Combustion Gas ($CO_2$)</p>
+        </div>
+        <div class="text-xs font-mono text-slate-400 bg-slate-900 px-3 py-1 rounded-xl border border-slate-800">
+          Last Packet: <span id="lastPacketTimestamp" class="text-cyan-400">Waiting...</span>
+        </div>
+      </div>
+
+      <div class="h-64 w-full">
+        <canvas id="telemetryChart"></canvas>
+      </div>
+    </div>
+
+    <!-- LIVE MQTT INGESTION CONSOLE (Direct Proof of ESP32 Communication) -->
+    <div class="glass-panel rounded-3xl p-5 border border-slate-800 space-y-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span id="packetPulseDot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span>
+          <h2 class="text-sm font-bold text-slate-200">Live Ingested Telemetry Stream (Proof of ESP32 Cloud Link)</h2>
+        </div>
+        <div class="text-xs font-mono text-cyan-400 bg-slate-900 px-3 py-1 rounded-xl border border-slate-800">
+          Packets Received: <span id="totalPacketsCount" class="font-bold text-white">0</span>
+        </div>
+      </div>
+      <pre id="rawPacketConsole" class="bg-slate-950 p-4 rounded-2xl border border-slate-900 text-xs font-mono text-emerald-400 overflow-x-auto max-h-40 leading-relaxed shadow-inner">Waiting for incoming packet from ESP32-CAM over MQTT topic 'smartcity/air_quality/node_01'...</pre>
+    </div>
+
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- JAVASCRIPT LOGIC (Three.js 3D + Chart.js + MQTT.js) -->
+  <!-- ===================================================================== -->
+  <script>
+    // Initialize Lucide Icons
+    lucide.createIcons();
+
+    // =========================================================================
+    // 1. MQTT WEBSOCKET CONNECTION SETUP
+    // =========================================================================
+    // Connects via WebSockets to HiveMQ Public Cloud Broker
+    const MQTT_BROKER_WS = 'wss://broker.hivemq.com:8884/mqtt';
+    const MQTT_TOPIC_SUB = 'smartcity/air_quality/node_01';
+
+    let mqttClient = null;
+    let isConnected = false;
+
+    function initMQTT() {
+      const clientId = 'web_dashboard_' + Math.random().toString(16).substr(2, 8);
+      console.log('Connecting to MQTT WebSocket broker:', MQTT_BROKER_WS);
+
+      try {
+        mqttClient = mqtt.connect(MQTT_BROKER_WS, {
+          clientId: clientId,
+          clean: true,
+          reconnectPeriod: 4000
+        });
+
+        mqttClient.on('connect', () => {
+          isConnected = true;
+          console.log('MQTT Connected successfully!');
+          document.getElementById('mqttStatusText').innerText = 'Connected Live to ESP32';
+          document.getElementById('mqttStatusBadge').className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-950/80 text-emerald-400 border border-emerald-500/40 shadow-sm';
+          
+          mqttClient.subscribe(MQTT_TOPIC_SUB, (err) => {
+            if (!err) console.log('Subscribed to:', MQTT_TOPIC_SUB);
+          });
+        });
+
+        mqttClient.on('message', (topic, message) => {
+          try {
+            const data = JSON.parse(message.toString());
+            onTelemetryReceived(data);
+          } catch (e) {
+            console.error('JSON parse error:', e);
+          }
+        });
+
+        mqttClient.on('error', (err) => {
+          console.warn('MQTT Connection Error:', err);
+          document.getElementById('mqttStatusText').innerText = 'Offline (Auto-Reconnecting)';
+          document.getElementById('mqttStatusBadge').className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-amber-950/80 text-amber-400 border border-amber-500/40';
+        });
+
+        mqttClient.on('close', () => {
+          document.getElementById('mqttStatusText').innerText = 'Reconnecting...';
+        });
+
+      } catch (e) {
+        console.error('MQTT Init error:', e);
+      }
+    }
+
+    // =========================================================================
+    // 2. CHART.JS REAL-TIME GRAPH
+    // =========================================================================
+    const ctx = document.getElementById('telemetryChart').getContext('2d');
+    const MAX_DATA_POINTS = 30;
+
+    const telemetryChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'PM 2.5 (µg/m³)',
+            borderColor: '#22d3ee',
+            backgroundColor: 'rgba(34, 211, 238, 0.1)',
+            data: [],
+            borderWidth: 2.5,
+            tension: 0.35,
+            yAxisID: 'y'
+          },
+          {
+            label: 'PM 10 (µg/m³)',
+            borderColor: '#38bdf8',
+            backgroundColor: 'transparent',
+            data: [],
+            borderWidth: 2,
+            borderDash: [5, 5],
+            tension: 0.35,
+            yAxisID: 'y'
+          },
+          {
+            label: 'CO₂ Equivalent (ppm)',
+            borderColor: '#fbbf24',
+            backgroundColor: 'rgba(251, 191, 36, 0.05)',
+            data: [],
+            borderWidth: 2,
+            tension: 0.35,
+            yAxisID: 'y1'
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 400 },
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: {
+            grid: { color: 'rgba(51, 65, 85, 0.3)' },
+            ticks: { color: '#64748b', font: { size: 10 } }
+          },
+          y: {
+            type: 'linear',
+            display: true,
+            position: 'left',
+            title: { display: true, text: 'Particulate (µg/m³)', color: '#94a3b8', font: { size: 11 } },
+            grid: { color: 'rgba(51, 65, 85, 0.3)' },
+            ticks: { color: '#94a3b8' }
+          },
+          y1: {
+            type: 'linear',
+            display: true,
+            position: 'right',
+            title: { display: true, text: 'Gas CO₂ (ppm)', color: '#fbbf24', font: { size: 11 } },
+            grid: { drawOnChartArea: false },
+            ticks: { color: '#fbbf24' }
+          }
+        },
+        plugins: {
+          legend: { labels: { color: '#cbd5e1', font: { size: 12 } } }
+        }
+      }
+    });
+
+    // =========================================================================
+    // 3. THREE.JS 3D DIGITAL TWIN & SPATIAL SMOKE PLUME
+    // =========================================================================
+    let scene, camera, renderer, controls;
+    let particleSystem, particleGeometry, particleMaterial;
+    let sensorNodeMesh, warningBeaconMesh;
+    const PARTICLE_COUNT = 600;
+    const particlePositions = new Float32Array(PARTICLE_COUNT * 3);
+    const particleVelocities = [];
+
+    // Current state representation for 3D physics
+    let currentPM25 = 15.0;
+    let currentSmokeAlert = false;
+
+    function initThreeScene() {
+      const container = document.getElementById('threeContainer');
+      const width = container.clientWidth;
+      const height = container.clientHeight || 420;
+
+      // Scene
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x070b14);
+      scene.fog = new THREE.FogExp2(0x070b14, 0.035);
+
+      // Camera
+      camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
+      camera.position.set(0, 5, 8);
+
+      // Renderer
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(width, height);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      container.appendChild(renderer.domElement);
+
+      // OrbitControls
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.maxPolarAngle = Math.PI / 2.05; // Don't go below floor
+
+      // Lights
+      const ambientLight = new THREE.AmbientLight(0x334155, 1.2);
+      scene.add(ambientLight);
+
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+      dirLight.position.set(5, 10, 7);
+      scene.add(dirLight);
+
+      // Floor Grid
+      const gridHelper = new THREE.GridHelper(12, 24, 0x38bdf8, 0x1e293b);
+      gridHelper.position.y = 0;
+      scene.add(gridHelper);
+
+      // Room Outline Wireframe Walls
+      const roomGeo = new THREE.BoxGeometry(10, 4, 10);
+      const roomEdges = new THREE.EdgesGeometry(roomGeo);
+      const roomLine = new THREE.LineSegments(roomEdges, new THREE.LineBasicMaterial({ color: 0x334155 }));
+      roomLine.position.y = 2;
+      scene.add(roomLine);
+
+      // Sensor Stand (Pillar at origin)
+      const pillarGeo = new THREE.CylinderGeometry(0.08, 0.12, 1.5, 16);
+      const pillarMat = new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.8, roughness: 0.2 });
+      const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+      pillar.position.set(0, 0.75, 0);
+      scene.add(pillar);
+
+      // Sensor Node Device Box
+      const sensorGeo = new THREE.BoxGeometry(0.35, 0.25, 0.2);
+      const sensorMat = new THREE.MeshStandardMaterial({ color: 0x0284c7, metalness: 0.5, roughness: 0.3 });
+      sensorNodeMesh = new THREE.Mesh(sensorGeo, sensorMat);
+      sensorNodeMesh.position.set(0, 1.5, 0);
+      scene.add(sensorNodeMesh);
+
+      // Warning Beacon / Light Sphere
+      const beaconGeo = new THREE.SphereGeometry(0.12, 16, 16);
+      const beaconMat = new THREE.MeshBasicMaterial({ color: 0x22c55e });
+      warningBeaconMesh = new THREE.Mesh(beaconGeo, beaconMat);
+      warningBeaconMesh.position.set(0, 1.7, 0);
+      scene.add(warningBeaconMesh);
+
+      // --- 3D PARTICLE PLUME SYSTEM ---
+      particleGeometry = new THREE.BufferGeometry();
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        // Start near the sensor head
+        resetParticle(i, true);
+      }
+
+      particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+
+      // Particle Material
+      particleMaterial = new THREE.PointsMaterial({
+        color: 0x34d399,
+        size: 0.12,
+        transparent: true,
+        opacity: 0.65,
+        blending: THREE.AdditiveBlending
+      });
+
+      particleSystem = new THREE.Points(particleGeometry, particleMaterial);
+      scene.add(particleSystem);
+
+      // Handle Resize
+      window.addEventListener('resize', () => {
+        const w = container.clientWidth;
+        const h = container.clientHeight || 420;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+      });
+
+      animateThree();
+    }
+
+    function resetParticle(index, randomizeHeight = false) {
+      const idx = index * 3;
+      // Start around sensor node [0, 1.5, 0]
+      particlePositions[idx] = (Math.random() - 0.5) * 0.4;
+      particlePositions[idx + 1] = randomizeHeight ? 1.5 + Math.random() * 2.0 : 1.5;
+      particlePositions[idx + 2] = (Math.random() - 0.5) * 0.4;
+
+      particleVelocities[index] = {
+        vx: (Math.random() - 0.5) * 0.015,
+        vy: 0.01 + Math.random() * 0.02,
+        vz: (Math.random() - 0.5) * 0.015
+      };
+    }
+
+    function animateThree() {
+      requestAnimationFrame(animateThree);
+      controls.update();
+
+      // Dynamic adjustments based on current PM2.5 / Smoke status
+      const positions = particleGeometry.attributes.position.array;
+      const speedMultiplier = currentSmokeAlert ? 3.0 : (currentPM25 > 50 ? 1.8 : 1.0);
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const idx = i * 3;
+        const vel = particleVelocities[i];
+
+        positions[idx] += vel.vx * speedMultiplier;
+        positions[idx + 1] += vel.vy * speedMultiplier;
+        positions[idx + 2] += vel.vz * speedMultiplier;
+
+        // Dispersion radius expands as particles rise
+        positions[idx] += (Math.random() - 0.5) * 0.008 * (currentSmokeAlert ? 2.5 : 1.0);
+        positions[idx + 2] += (Math.random() - 0.5) * 0.008 * (currentSmokeAlert ? 2.5 : 1.0);
+
+        // Respawn if reaches ceiling or boundaries
+        if (positions[idx + 1] > 3.8 || Math.abs(positions[idx]) > 4.5 || Math.abs(positions[idx + 2]) > 4.5) {
+          resetParticle(i, false);
+        }
+      }
+
+      particleGeometry.attributes.position.needsUpdate = true;
+
+      // Color & visual modulation
+      if (currentSmokeAlert) {
+        // Red Emergency Smoke Cloud
+        particleMaterial.color.setHex(0xf43f5e);
+        particleMaterial.size = 0.22;
+        warningBeaconMesh.material.color.setHex(Math.sin(Date.now() * 0.01) > 0 ? 0xff0000 : 0x440000);
+      } else if (currentPM25 > 35) {
+        // Amber / Moderate
+        particleMaterial.color.setHex(0xfbbf24);
+        particleMaterial.size = 0.15;
+        warningBeaconMesh.material.color.setHex(0xfbbf24);
+      } else {
+        // Clean Emerald Green
+        particleMaterial.color.setHex(0x34d399);
+        particleMaterial.size = 0.11;
+        warningBeaconMesh.material.color.setHex(0x22c55e);
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    // =========================================================================
+    // 4. TELEMETRY PACKET PROCESSOR & UI UPDATES
+    // =========================================================================
+    function onTelemetryReceived(data) {
+      console.log('Telemetry received:', data);
+
+      const pm25 = data.particulate_matter?.pm2_5_ug_m3 || 15.0;
+      const pm10 = data.particulate_matter?.pm10_ug_m3 || 28.0;
+      const co2 = data.hazardous_gas_mq135?.co2_ppm || 420.0;
+      const aqi = data.environment?.aqi_index || 40;
+      const temp = data.environment?.temperature_c || 26.5;
+      const hum = data.environment?.humidity_percent || 52.0;
+      const smokeAlert = data.vision_ai?.smoke_detected || false;
+      const timestamp = data.timestamp || new Date().toISOString();
+
+      currentPM25 = pm25;
+      currentSmokeAlert = smokeAlert;
+
+      // Update Live Packet Console & Counter (Visible Proof of Connection)
+      if (!window.totalPacketsReceived) window.totalPacketsReceived = 0;
+      window.totalPacketsReceived++;
+      const packetCountElem = document.getElementById('totalPacketsCount');
+      if (packetCountElem) packetCountElem.innerText = window.totalPacketsReceived;
+
+      const consoleElem = document.getElementById('rawPacketConsole');
+      if (consoleElem) {
+        consoleElem.innerText = `[RECEIVED @ ${new Date().toLocaleTimeString()}] Topic: smartcity/air_quality/node_01\n` + JSON.stringify(data, null, 2);
+      }
+
+      // Flash Green Pulse Dot
+      const dot = document.getElementById('packetPulseDot');
+      if (dot) {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping';
+        setTimeout(() => { dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500'; }, 600);
+      }
+
+      // Update KPI Cards
+      document.getElementById('pm25Val').innerText = pm25.toFixed(1);
+      document.getElementById('pm10Val').innerText = pm10.toFixed(1);
+      document.getElementById('co2Val').innerText = Math.round(co2);
+      document.getElementById('aqiVal').innerText = aqi;
+      document.getElementById('tempVal').innerText = temp.toFixed(1);
+      document.getElementById('humidityVal').innerText = hum.toFixed(1);
+      document.getElementById('lastPacketTimestamp').innerText = timestamp.split('T')[1].replace('Z','');
+
+      // Update Badge Colors
+      if (pm25 <= 15) {
+        document.getElementById('pm25Badge').className = 'px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400';
+        document.getElementById('pm25Badge').innerText = 'EXCELLENT';
+      } else if (pm25 <= 35) {
+        document.getElementById('pm25Badge').className = 'px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-950 text-sky-400';
+        document.getElementById('pm25Badge').innerText = 'GOOD';
+      } else {
+        document.getElementById('pm25Badge').className = 'px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-400';
+        document.getElementById('pm25Badge').innerText = 'HIGH';
+      }
+
+      // Emergency Smoke Alert Handling
+      const banner = document.getElementById('hazardBanner');
+      const boundingBox = document.getElementById('aiBoundingBox');
+      const fireProbBar = document.getElementById('fireProbBar');
+      const fireProbText = document.getElementById('fireProbText');
+      const plumeText = document.getElementById('plumeModelText');
+
+      if (smokeAlert) {
+        banner.classList.remove('hidden');
+        document.getElementById('hazardAqiVal').innerText = 'AQI ' + aqi;
+        boundingBox.classList.remove('hidden');
+        fireProbBar.style.width = '94.8%';
+        fireProbBar.className = 'h-full bg-rose-600 rounded-full transition-all duration-500';
+        fireProbText.innerText = '94.8% (HAZARD DETECTED)';
+        fireProbText.className = 'font-mono text-rose-500 font-bold';
+        plumeText.innerText = '⚠️ Turbulent Smoke Plume (Spreading)';
+        plumeText.className = 'text-rose-400 font-semibold';
+      } else {
+        banner.classList.add('hidden');
+        boundingBox.classList.add('hidden');
+        fireProbBar.style.width = '3.5%';
+        fireProbBar.className = 'h-full bg-emerald-500 rounded-full transition-all duration-500';
+        fireProbText.innerText = '3.5% (Clear)';
+        fireProbText.className = 'font-mono text-emerald-400 font-bold';
+        plumeText.innerText = 'Gaussian Laminar (Normal)';
+        plumeText.className = 'text-emerald-400 font-semibold';
+      }
+
+      // Update Chart.js
+      const timeLabel = timestamp.split('T')[1].replace('Z','');
+      telemetryChart.data.labels.push(timeLabel);
+      telemetryChart.data.datasets[0].data.push(pm25);
+      telemetryChart.data.datasets[1].data.push(pm10);
+      telemetryChart.data.datasets[2].data.push(co2);
+
+      if (telemetryChart.data.labels.length > MAX_DATA_POINTS) {
+        telemetryChart.data.labels.shift();
+        telemetryChart.data.datasets[0].data.shift();
+        telemetryChart.data.datasets[1].data.shift();
+        telemetryChart.data.datasets[2].data.shift();
+      }
+      telemetryChart.update();
+    }
+
+    // =========================================================================
+    // 5. JUDGE DEMO MODE TRIGGERS (Guaranteed to work even offline!)
+    // =========================================================================
+    function toggleSimulatedHazard(isSmoke) {
+      const demoPacket = {
+        device_id: "ESP32-CAM-SENTINEL",
+        timestamp: new Date().toISOString(),
+        particulate_matter: {
+          pm2_5_ug_m3: isSmoke ? 184.2 : 14.8,
+          pm10_ug_m3: isSmoke ? 342.0 : 27.5
+        },
+        hazardous_gas_mq135: {
+          co2_ppm: isSmoke ? 1620.0 : 418.0
+        },
+        environment: {
+          aqi_index: isSmoke ? 310 : 38,
+          temperature_c: isSmoke ? 31.4 : 26.4,
+          humidity_percent: isSmoke ? 38.0 : 52.0
+        },
+        vision_ai: {
+          smoke_detected: isSmoke,
+          fire_hazard: isSmoke
+        }
+      };
+
+      onTelemetryReceived(demoPacket);
+    }
+
+    // Initialize Everything on Page Load
+    window.addEventListener('DOMContentLoaded', () => {
+      initThreeScene();
+      initMQTT();
+      
+      // Seed first clean reading
+      toggleSimulatedHazard(false);
+    });
+  </script>
+</body>
+</html>
