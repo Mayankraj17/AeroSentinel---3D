@@ -65,3 +65,4 @@ python fire_detector_mqtt.py --source 0
 
 ## 👨‍💻 Author
 - **Mayank Raj** ([@Mayankraj17](https://github.com/Mayankraj17))
+- **Hiten Jain** 
